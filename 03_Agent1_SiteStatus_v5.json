@@ -1,0 +1,1118 @@
+{
+  "name": "AGENT1_SiteStatus_v5",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger-orchestrator",
+      "name": "Called by Orchestrator",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 48
+            }
+          ]
+        }
+      },
+      "id": "cron-reminder",
+      "name": "Cron: Check 48hr No-Update",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "id": "cron-eod",
+      "name": "Cron: End-of-Day Report (6 PM)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst input = $input.first().json;\nlet normalized = {\n  source: input.source || 'unknown',\n  from: input.from || input.supervisor_phone || '',\n  supervisor_phone: input.supervisor_phone || input.from || '',\n  supervisor_email: input.supervisor_email || '',\n  manager_phone: input.manager_phone || '',\n  manager_email: input.manager_email || '',\n  client_phone: input.client_phone || '',\n  client_email: input.client_email || '',\n  client_name: input.client_name || '',\n  site_id: input.site_id || null,\n  raw_text: input.text || input.Body || input.message || '',\n  has_image: !!(input.MediaUrl0 || input.image_url || input.photo),\n  image_url: input.MediaUrl0 || input.image_url || input.photo || null,\n  has_voice: !!(input.voice_url || input.audio_url),\n  voice_url: input.voice_url || input.audio_url || null,\n  has_pdf: !!(input.pdf_url || input.attachment),\n  pdf_url: input.pdf_url || input.attachment || null,\n  form_status: input.form_status || null,\n  form_notes: input.form_notes || null,\n  timestamp: new Date().toISOString()\n};\nreturn [{ json: normalized }];\n"
+      },
+      "id": "normalize-input",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.has_voice }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ]
+        }
+      },
+      "id": "if-voice",
+      "name": "Has Voice Note?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        720,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/audio/transcriptions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "url",
+              "value": "={{ $json.voice_url }}"
+            },
+            {
+              "name": "model",
+              "value": "whisper-1"
+            },
+            {
+              "name": "language",
+              "value": "en"
+            }
+          ]
+        }
+      },
+      "id": "whisper-transcribe",
+      "name": "Whisper: Transcribe Voice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst prev = $('Normalize Input').first().json;\nconst transcript = $input.first().json.text || '';\nreturn [{ json: { ...prev, raw_text: prev.raw_text + ' ' + transcript, voice_transcribed: transcript } }];\n"
+      },
+      "id": "merge-transcript",
+      "name": "Merge Transcript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "claude-haiku-4-5-20251001",
+          "mode": "list"
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You extract structured site status data from field supervisor messages. Return STRICT JSON only \u2014 no prose, no markdown:\n{\n  \"site_id\": \"extracted or null\",\n  \"work_phase\": \"extracted or null\",\n  \"progress_pct\": 0-100 or null,\n  \"status\": \"Completed|On Track|Blocked\",\n  \"blockers\": \"description or null\",\n  \"next_steps\": \"description or null\",\n  \"supervisor_name\": \"extracted or null\",\n  \"confidence\": 0.0-1.0\n}\nIf status cannot be determined, default to On Track. If site_id missing, set null."
+            },
+            {
+              "role": "user",
+              "content": "Source: {{ $json.source }}\nFrom: {{ $json.from }}\nMessage: {{ $json.raw_text }}\nForm status (if any): {{ $json.form_status || 'none' }}\nForm notes (if any): {{ $json.form_notes || 'none' }}\nHas photo: {{ $json.has_image }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0,
+          "maxTokens": 400
+        }
+      },
+      "id": "claude-extract",
+      "name": "Claude Haiku: Extract Status",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1,
+      "position": [
+        1440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst raw = $input.first().json.message?.content || $input.first().json.content || '{}';\nlet extracted;\ntry {\n  extracted = JSON.parse(raw.replace(/```json|```/g, '').trim());\n} catch(e) {\n  extracted = {\n    site_id: null, work_phase: null, progress_pct: null,\n    status: 'On Track', blockers: null, next_steps: null,\n    supervisor_name: null, confidence: 0\n  };\n}\nconst original = $('Normalize Input').first().json;\nreturn [{ json: { ...original, ...extracted, parsed_at: new Date().toISOString() } }];\n"
+      },
+      "id": "parse-extraction",
+      "name": "Parse Extraction",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "Blocked",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "if-blocked",
+      "name": "Status = BLOCKED?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "from": "+1XXXXXXXXXX",
+        "to": "={{ $vars.PROJECT_MANAGER_PHONE }}",
+        "message": "\ud83d\udea8 BLOCKED SITE ALERT\nSite: {{ $json.site_id || 'Unknown' }}\nPhase: {{ $json.work_phase || 'N/A' }}\nBlocker: {{ $json.blockers }}\nReported by: {{ $json.supervisor_name || $json.from }}\nTime: {{ $json.parsed_at }}\n\nAction required immediately."
+      },
+      "id": "twilio-escalate",
+      "name": "Twilio: Alert Project Manager",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        2160,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "SiteStatus",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [
+            "site_id"
+          ],
+          "value": {
+            "site_id": "={{ $json.site_id }}",
+            "work_phase": "={{ $json.work_phase }}",
+            "progress_pct": "={{ $json.progress_pct }}",
+            "status": "={{ $json.status }}",
+            "blockers": "={{ $json.blockers }}",
+            "next_steps": "={{ $json.next_steps }}",
+            "supervisor_name": "={{ $json.supervisor_name }}",
+            "supervisor_phone": "={{ $json.from }}",
+            "source": "={{ $json.source }}",
+            "last_updated": "={{ $json.parsed_at }}",
+            "has_photo": "={{ $json.has_image }}",
+            "photo_url": "={{ $json.image_url }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "airtable-upsert-status",
+      "name": "Google Sheets: Update Site Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2160,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "AuditLog",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.parsed_at }}",
+            "site_id": "={{ $json.site_id }}",
+            "status": "={{ $json.status }}",
+            "progress_pct": "={{ $json.progress_pct }}",
+            "supervisor_name": "={{ $json.supervisor_name }}",
+            "source": "={{ $json.source }}",
+            "raw_text": "={{ $json.raw_text }}",
+            "confidence_score": "={{ $json.confidence }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "airtable-audit",
+      "name": "Google Sheets: Append Audit Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2400,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ============================================================\n// OUTPUT DISPATCHER\n// Fans out to all 4 output channels simultaneously after\n// sheets are updated. Reads contact details from payload\n// (passed in from Master Sheet via Orchestrator).\n// ============================================================\nconst d = $input.first().json;\n\nconst statusEmoji = {\n  'Blocked': '\ud83d\udd34',\n  'On Track': '\ud83d\udfe1',\n  'Completed': '\ud83d\udfe2'\n}[d.status] || '\u26aa';\n\nconst now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });\n\n// --- 1. SUPERVISOR ACKNOWLEDGEMENT (WhatsApp) ---\nconst supervisorAck = `\u2705 Update Received!\n\nHi ${d.supervisor_name || 'Supervisor'},\nYour report for *Site ${d.site_id || 'N/A'}* has been logged successfully.\n\n\ud83d\udcca Status: ${statusEmoji} ${d.status}\n\ud83d\udcc8 Progress: ${d.progress_pct || 'N/A'}%\n\ud83d\udd50 Logged at: ${now}\n\nThank you. Keep up the good work! \ud83d\udcaa`;\n\n// --- 2. MANAGER WHATSAPP SUMMARY ---\nconst managerWhatsApp = `\ud83d\udccb *SITE UPDATE \u2014 ${d.site_id || 'Unknown Site'}*\n\n${statusEmoji} *Status:* ${d.status}\n\ud83d\udcc8 *Progress:* ${d.progress_pct || 'N/A'}%\n\ud83d\udd27 *Phase:* ${d.work_phase || 'N/A'}\n\ud83d\udc77 *Supervisor:* ${d.supervisor_name || 'N/A'}\n\n\ud83d\udcdd *Work Done:*\n${d.raw_text || 'No details provided'}\n\n${d.blockers ? '\u26a0\ufe0f *Blockers:* ' + d.blockers : '\u2705 No blockers'}\n${d.next_steps ? '\u27a1\ufe0f *Next Steps:* ' + d.next_steps : ''}\n\n\ud83d\udd50 ${now}`;\n\n// --- 3. RAHUL TANWAR EOD SUMMARY (Email body) ---\nconst rahulEmailSubject = `[Genome] Site ${d.site_id || 'N/A'} \u2014 ${d.status} | ${new Date().toLocaleDateString('en-IN')}`;\nconst rahulEmailBody = `\n<html><body style='font-family:Arial,sans-serif;max-width:600px;margin:auto;'>\n<h2 style='color:#1a1a2e;border-bottom:2px solid #e94560;padding-bottom:8px;'>\n  \ud83d\udcca Site Status Summary \u2014 ${d.site_id || 'N/A'}\n</h2>\n<table style='width:100%;border-collapse:collapse;margin:16px 0;'>\n  <tr style='background:#f0f0f0;'><th style='padding:8px;text-align:left;'>Field</th><th style='padding:8px;text-align:left;'>Details</th></tr>\n  <tr><td style='padding:8px;border-bottom:1px solid #ddd;'><b>Site ID</b></td><td style='padding:8px;border-bottom:1px solid #ddd;'>${d.site_id || 'N/A'}</td></tr>\n  <tr><td style='padding:8px;border-bottom:1px solid #ddd;'><b>Status</b></td><td style='padding:8px;border-bottom:1px solid #ddd;'>${statusEmoji} ${d.status}</td></tr>\n  <tr><td style='padding:8px;border-bottom:1px solid #ddd;'><b>Progress</b></td><td style='padding:8px;border-bottom:1px solid #ddd;'>${d.progress_pct || 'N/A'}%</td></tr>\n  <tr><td style='padding:8px;border-bottom:1px solid #ddd;'><b>Phase</b></td><td style='padding:8px;border-bottom:1px solid #ddd;'>${d.work_phase || 'N/A'}</td></tr>\n  <tr><td style='padding:8px;border-bottom:1px solid #ddd;'><b>Supervisor</b></td><td style='padding:8px;border-bottom:1px solid #ddd;'>${d.supervisor_name || 'N/A'}</td></tr>\n  <tr><td style='padding:8px;border-bottom:1px solid #ddd;'><b>Work Done Today</b></td><td style='padding:8px;border-bottom:1px solid #ddd;'>${d.raw_text || 'N/A'}</td></tr>\n  <tr><td style='padding:8px;border-bottom:1px solid #ddd;'><b>Blockers</b></td><td style='padding:8px;border-bottom:1px solid #ddd;'>${d.blockers || 'None'}</td></tr>\n  <tr><td style='padding:8px;'><b>Next Steps</b></td><td style='padding:8px;'>${d.next_steps || 'N/A'}</td></tr>\n</table>\n<p style='color:#666;font-size:12px;'>Generated by Genome AI Agent System at ${now}</p>\n</body></html>`;\n\n// --- 4. CLIENT PDF HTML (rendered by Gotenberg) ---\n// NOTE: Gotenberg is a free open-source Docker microservice that converts HTML\u2192PDF.\n// Deploy it on your server: docker run --rm -p 3000:3000 gotenberg/gotenberg:8\n// Then set GOTENBERG_URL in n8n Variables.\nconst clientPdfHtml = `\n<!DOCTYPE html><html><head>\n<style>\n  body{font-family:'Helvetica Neue',Arial,sans-serif;margin:0;padding:40px;color:#222;}\n  .header{background:#1a1a2e;color:white;padding:24px 32px;margin:-40px -40px 32px;}\n  .header h1{margin:0;font-size:22px;letter-spacing:1px;}\n  .header p{margin:4px 0 0;font-size:12px;opacity:0.7;}\n  .badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:13px;font-weight:bold;color:white;\n    background:${ d.status === 'Completed' ? '#27ae60' : d.status === 'Blocked' ? '#e74c3c' : '#f39c12' };}\n  .section{margin:24px 0;}\n  .section h3{font-size:13px;text-transform:uppercase;letter-spacing:1px;color:#888;margin-bottom:8px;}\n  .progress-bar{background:#eee;border-radius:8px;height:12px;margin:8px 0;}\n  .progress-fill{background:#1a1a2e;height:12px;border-radius:8px;width:${d.progress_pct || 0}%;}\n  table{width:100%;border-collapse:collapse;}\n  td{padding:10px 12px;border-bottom:1px solid #eee;font-size:14px;}\n  td:first-child{color:#666;width:40%;}\n  .footer{margin-top:40px;padding-top:16px;border-top:1px solid #eee;font-size:11px;color:#aaa;text-align:center;}\n</style>\n</head><body>\n<div class='header'>\n  <h1>\ud83c\udfd7\ufe0f GENOME CORPORATION</h1>\n  <p>Site Progress Report \u2014 ${new Date().toLocaleDateString('en-IN', {day:'2-digit',month:'long',year:'numeric'})}</p>\n</div>\n\n<div style='display:flex;justify-content:space-between;align-items:center;'>\n  <div>\n    <h2 style='margin:0;font-size:20px;'>Site: ${d.site_id || 'N/A'}</h2>\n    <p style='margin:4px 0;color:#666;'>Phase: ${d.work_phase || 'N/A'}</p>\n  </div>\n  <div class='badge'>${statusEmoji} ${d.status}</div>\n</div>\n\n<div class='section'>\n  <h3>Overall Progress</h3>\n  <div style='font-size:28px;font-weight:bold;'>${d.progress_pct || 0}%</div>\n  <div class='progress-bar'><div class='progress-fill'></div></div>\n</div>\n\n<div class='section'>\n  <h3>Report Details</h3>\n  <table>\n    <tr><td>Work Completed Today</td><td>${d.raw_text || 'N/A'}</td></tr>\n    <tr><td>Blockers / Issues</td><td>${d.blockers || 'None reported'}</td></tr>\n    <tr><td>Next Actions</td><td>${d.next_steps || 'N/A'}</td></tr>\n    <tr><td>Site Supervisor</td><td>${d.supervisor_name || 'N/A'}</td></tr>\n    <tr><td>Report Generated</td><td>${now}</td></tr>\n  </table>\n</div>\n\n<div class='footer'>This report was automatically generated by Genome AI Operations System. For queries contact your project manager.</div>\n</body></html>`;\n\nreturn [{ json: {\n  ...d,\n  supervisorAck,\n  managerWhatsApp,\n  rahulEmailSubject,\n  rahulEmailBody,\n  clientPdfHtml,\n  supervisor_phone: d.supervisor_phone || d.from,\n  manager_phone: d.manager_phone || $vars.PROJECT_MANAGER_PHONE,\n  manager_email: d.manager_email || $vars.MANAGER_EMAIL,\n  rahul_email: $vars.RAHUL_EMAIL || 'rahul.tanwar@genomecorporation.com',\n  rahul_phone: $vars.RAHUL_PHONE || '',\n  client_phone: d.client_phone || '',\n  client_email: d.client_email || ''\n}}];\n"
+      },
+      "id": "build-all-outputs",
+      "name": "Build All Output Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## \ud83d\udce6 BUILD RAW DRAFTS\nPrepares raw draft versions of:\n1. Supervisor ACK\n2. Manager WhatsApp\n3. Rahul Email HTML\n4. Client WhatsApp + PDF HTML\n\nThese are DRAFTS \u2014 Claude Sonnet\npolishes them in the next node\nbefore any message is sent.",
+        "height": 240,
+        "width": 280,
+        "color": 5
+      },
+      "id": "note-build-outputs",
+      "name": "Note: Build Outputs",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2640,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "from": "+1XXXXXXXXXX",
+        "to": "=whatsapp:{{ $json.supervisor_phone }}",
+        "message": "={{ $json.supervisorAck }}"
+      },
+      "id": "twilio-ack-supervisor",
+      "name": "WhatsApp: ACK to Supervisor",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        2900,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "from": "+1XXXXXXXXXX",
+        "to": "=whatsapp:{{ $json.manager_phone }}",
+        "message": "={{ $json.managerWhatsApp }}"
+      },
+      "id": "twilio-manager-summary",
+      "name": "WhatsApp: Summary to Manager",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        2900,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.rahul_email }}",
+        "subject": "={{ $json.rahulEmailSubject }}",
+        "emailType": "html",
+        "message": "={{ $json.rahulEmailBody }}",
+        "options": {}
+      },
+      "id": "gmail-rahul-summary",
+      "name": "Gmail: EOD Summary to Rahul Tanwar",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2900,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "name": "={{ $('jsPDF: Generate PDF + Build Client Payload').first().json.pdf_filename }}",
+        "driveId": {
+          "__rl": true,
+          "value": "My Drive",
+          "mode": "list"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "YOUR_DRIVE_FOLDER_ID",
+          "mode": "id"
+        },
+        "binaryData": true,
+        "binaryPropertyName": "pdf_data",
+        "options": {
+          "permissionsUi": {
+            "permissionsValues": {
+              "role": "reader",
+              "type": "anyone"
+            }
+          }
+        }
+      },
+      "id": "gdrive-upload-pdf",
+      "name": "Google Drive: Upload PDF",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        3380,
+        740
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n# ============================================================\n# Genome Corporation \u2014 Branded PDF Generator\n# Uses reportlab (pre-installed on n8n self-hosted)\n# For n8n cloud: use the HTTP Request approach described below\n# ============================================================\n# NOTE FOR n8n CLOUD USERS:\n# n8n cloud Code nodes do NOT support Python or pip install.\n# Two options:\n#   OPTION A (Recommended): Deploy a tiny Flask microservice\n#             on Railway/Render that accepts JSON and returns PDF.\n#             See genome-pdf-service setup below.\n#   OPTION B: Use the HTML-to-PDF approach via a self-hosted n8n.\n#\n# This node outputs the data payload needed for OPTION A.\n# ============================================================\n\nconst d = $input.first().json;\nconst dateStr = new Date().toLocaleDateString('en-IN', {\n  day: '2-digit', month: 'long', year: 'numeric'\n});\n\n// Package all data for the PDF microservice\nconst pdfPayload = {\n  site_id: d.site_id || 'N/A',\n  client_name: d.client_name || 'Valued Client',\n  work_phase: d.work_phase || 'N/A',\n  status: d.status || 'On Track',\n  progress_pct: d.progress_pct || 0,\n  supervisor_name: d.supervisor_name || 'N/A',\n  raw_text: d.raw_text || 'No details provided',\n  blockers: d.blockers || 'None',\n  next_steps: d.next_steps || 'N/A',\n  report_date: dateStr,\n  parsed_at: d.parsed_at\n};\n\nconst filename = `Genome-SiteReport-${d.site_id || 'unknown'}-${dateStr.replace(/ /g,'-')}.pdf`;\n\n// WhatsApp message for client\nconst clientWhatsAppMsg = `\ud83d\udcc4 *Genome Corporation \u2014 Site Progress Report*\n\nDear ${d.client_name || 'Valued Client'},\n\nYour site progress report for *${d.site_id || 'N/A'}* is ready.\n\n\ud83d\udcca Status: ${d.status}\n\ud83d\udcc8 Progress: ${d.progress_pct || 'N/A'}%\n\n\ud83d\udd17 Report: DRIVE_URL_PLACEHOLDER\n\n_${dateStr} | Genome AI Operations_`;\n\nreturn [{ json: {\n  ...d,\n  pdf_payload: pdfPayload,\n  pdf_filename: filename,\n  clientWhatsAppMsg,\n  pdf_service_url: $vars.PDF_SERVICE_URL || 'https://your-pdf-service.railway.app/generate'\n}}];\n"
+      },
+      "id": "reportlab-generate-pdf",
+      "name": "Python: Generate Branded PDF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3620,
+        740
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.client_phone }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "if-client-has-phone",
+      "name": "Client Has WhatsApp?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3860,
+        740
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "from": "+1XXXXXXXXXX",
+        "to": "=whatsapp:{{ $json.client_phone }}",
+        "message": "={{ $json.clientWhatsAppMsg }}"
+      },
+      "id": "twilio-client-whatsapp",
+      "name": "WhatsApp: Report Link to Client",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        4100,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.client_email }}",
+        "subject": "=Genome Corporation \u2014 Site ${$json.site_id || 'N/A'} Progress Report | {{ new Date().toLocaleDateString('en-IN') }}",
+        "emailType": "html",
+        "message": "=<html><body style='font-family:Arial,sans-serif;max-width:600px;margin:auto;'>\n<div style='background:#1a1a2e;color:white;padding:24px;text-align:center;'>\n  <h2 style='margin:0;'>\ud83c\udfd7\ufe0f Genome Corporation</h2>\n  <p style='margin:4px 0 0;opacity:0.7;font-size:13px;'>Site Progress Report</p>\n</div>\n<div style='padding:24px;'>\n  <p>Dear {{ $json.client_name || 'Valued Client' }},</p>\n  <p>Please find attached your daily progress report for <strong>Site {{ $json.site_id || 'N/A' }}</strong>.</p>\n  <p>\ud83d\udcca <strong>Status:</strong> {{ $json.status }}<br>\ud83d\udcc8 <strong>Progress:</strong> {{ $json.progress_pct || 'N/A' }}%</p>\n  <p><a href='{{ $json.pdf_public_url }}' style='background:#1a1a2e;color:white;padding:12px 24px;text-decoration:none;border-radius:4px;display:inline-block;margin:8px 0;'>\ud83d\udcc4 View Full Report</a></p>\n  <p style='color:#666;font-size:12px;'>This is an automated report from Genome AI Operations System.</p>\n</div>\n</body></html>",
+        "options": {}
+      },
+      "id": "gmail-client-email",
+      "name": "Gmail: PDF Report to Client",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        4100,
+        860
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## \ud83d\udce4 OUTPUT 1: SUPERVISOR ACK\n\u2705 Instant WhatsApp back to supervisor\nconfirming their update was received.\n\n**Contact source:** supervisor_phone\nfrom normalized input payload.\n\nFormat: emoji-rich, brief, friendly.",
+        "height": 160,
+        "width": 260,
+        "color": 4
+      },
+      "id": "note-ack",
+      "name": "Note: Supervisor ACK",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2900,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## \ud83d\udce4 OUTPUT 2: MANAGER WHATSAPP\nFormatted site summary to Project Manager.\n\n**Contact source:** manager_phone\nfrom Master Sheet (via Orchestrator).\n\nIncludes status, progress, blockers,\nnext steps.",
+        "height": 160,
+        "width": 260,
+        "color": 4
+      },
+      "id": "note-manager-wa",
+      "name": "Note: Manager WhatsApp",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2900,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## \ud83d\udce4 OUTPUT 3: RAHUL TANWAR EMAIL\nHTML email summary to Rahul Sir.\n\n**Set in n8n Variables:**\nRAHUL_EMAIL = rahul@genome...\nRAHUL_PHONE = +91XXXXXXXXXX\n\nContains full site table, status badge,\nand blockers highlighted.",
+        "height": 160,
+        "width": 260,
+        "color": 4
+      },
+      "id": "note-rahul-email",
+      "name": "Note: Rahul Email",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2900,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## \ud83d\udce4 OUTPUT 4: CLIENT PDF REPORT\n3-step pipeline (no external service):\n1. jsPDF generates PDF in-memory\n2. Upload binary to Google Drive (public link)\n3. Send link via WhatsApp OR email\n\n**100% safe \u2014 data never leaves n8n.**\n**No Gotenberg needed.**\n\nSETUP REQUIRED:\n- Set YOUR_DRIVE_FOLDER_ID\n- Ensure Drive permissions = public reader",
+        "height": 220,
+        "width": 280,
+        "color": 3
+      },
+      "id": "note-pdf-pipeline",
+      "name": "Note: PDF Pipeline",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3140,
+        580
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "readRows",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "SiteStatus",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "sheets-read-all",
+      "name": "Google Sheets: Read All Sites",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        480,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst now = new Date();\nconst stale = $input.all()\n  .map(i => i.json)\n  .filter(site => {\n    if (!site.last_updated || site.status === 'Completed') return false;\n    const lastUpdate = new Date(site.last_updated);\n    const hoursAgo = (now - lastUpdate) / (1000 * 60 * 60);\n    return hoursAgo >= 48;\n  });\nif (stale.length === 0) return [{ json: { skipped: true, reason: 'No stale sites' } }];\nreturn stale.map(s => ({ json: s }));\n"
+      },
+      "id": "filter-stale",
+      "name": "Filter: Sites With No Update 48hr",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "from": "+1XXXXXXXXXX",
+        "to": "=whatsapp:{{ $json.supervisor_phone }}",
+        "message": "\ud83d\udc4b Hi {{ $json.supervisor_name || 'Supervisor' }}, no update received for Site {{ $json.site_id }} in 48 hours. Please send your status update now. Reply with: Site ID, % complete, any blockers."
+      },
+      "id": "twilio-reminder",
+      "name": "Twilio: Reminder SMS to Supervisor",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        960,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "readRows",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "SiteStatus",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "sheets-fetch-all-eod",
+      "name": "Google Sheets: Fetch All Sites",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        480,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst sites = $input.all().map(i => i.json);\nconst blocked = sites.filter(s => s.status === 'Blocked');\nconst onTrack = sites.filter(s => s.status === 'On Track');\nconst done = sites.filter(s => s.status === 'Completed');\n\nconst rows = sites.map(s => `<tr>\n  <td style='padding:8px;border-bottom:1px solid #eee;'>${s.site_id || 'N/A'}</td>\n  <td style='padding:8px;border-bottom:1px solid #eee;'>${s.supervisor_name || 'N/A'}</td>\n  <td style='padding:8px;border-bottom:1px solid #eee;'>${s.status === 'Blocked' ? '\ud83d\udd34' : s.status === 'Completed' ? '\ud83d\udfe2' : '\ud83d\udfe1'} ${s.status}</td>\n  <td style='padding:8px;border-bottom:1px solid #eee;'>${s.progress_pct || 0}%</td>\n  <td style='padding:8px;border-bottom:1px solid #eee;'>${s.blockers || '\u2014'}</td>\n</tr>`).join('');\n\nconst html = `<html><body style='font-family:Arial,sans-serif;max-width:700px;margin:auto;'>\n<h2 style='color:#1a1a2e;'>\ud83d\udcca Genome \u2014 Daily EOD Site Report</h2>\n<p style='color:#666;'>Generated: ${new Date().toLocaleString('en-IN', {timeZone:'Asia/Kolkata'})}</p>\n<div style='display:flex;gap:16px;margin:16px 0;'>\n  <div style='background:#ffeaea;padding:12px 20px;border-radius:8px;text-align:center;'><div style='font-size:24px;font-weight:bold;color:#e74c3c;'>${blocked.length}</div><div style='font-size:12px;color:#999;'>BLOCKED</div></div>\n  <div style='background:#fff8e1;padding:12px 20px;border-radius:8px;text-align:center;'><div style='font-size:24px;font-weight:bold;color:#f39c12;'>${onTrack.length}</div><div style='font-size:12px;color:#999;'>ON TRACK</div></div>\n  <div style='background:#eafaf1;padding:12px 20px;border-radius:8px;text-align:center;'><div style='font-size:24px;font-weight:bold;color:#27ae60;'>${done.length}</div><div style='font-size:12px;color:#999;'>COMPLETED</div></div>\n</div>\n<table style='width:100%;border-collapse:collapse;'>\n  <tr style='background:#1a1a2e;color:white;'>\n    <th style='padding:10px;text-align:left;'>Site ID</th>\n    <th style='padding:10px;text-align:left;'>Supervisor</th>\n    <th style='padding:10px;text-align:left;'>Status</th>\n    <th style='padding:10px;text-align:left;'>Progress</th>\n    <th style='padding:10px;text-align:left;'>Blockers</th>\n  </tr>\n  ${rows}\n</table>\n<p style='color:#aaa;font-size:11px;margin-top:24px;'>Genome AI Operations System</p>\n</body></html>`;\n\nreturn [{ json: { eod_html: html, total: sites.length, blocked: blocked.length, on_track: onTrack.length, completed: done.length } }];\n"
+      },
+      "id": "build-eod-report",
+      "name": "Build EOD Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $vars.MANAGER_EMAIL }}",
+        "subject": "=[Genome EOD] Daily Site Summary \u2014 {{ new Date().toLocaleDateString('en-IN') }} | {{ $json.blocked }} Blocked | {{ $json.on_track }} On Track | {{ $json.completed }} Done",
+        "emailType": "html",
+        "message": "={{ $json.eod_html }}",
+        "options": {}
+      },
+      "id": "gmail-eod-manager",
+      "name": "Gmail: Send EOD Report to Manager",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        960,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst driveFile = $input.first().json;\nconst prev = $('jsPDF: Generate PDF + Build Client Payload').first().json;\nconst fileId = driveFile.id;\nconst publicUrl = `https://drive.google.com/file/d/${fileId}/view?usp=sharing`;\nconst msg = prev.clientWhatsAppMsg.replace('DRIVE_URL_PLACEHOLDER', publicUrl);\nreturn [{ json: { ...prev, pdf_public_url: publicUrl, pdf_file_id: fileId, clientWhatsAppMsg: msg } }];\n"
+      },
+      "id": "post-drive-payload",
+      "name": "Set Drive URL in Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3620,
+        740
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "claude-sonnet-4-20250514",
+          "mode": "list"
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a professional construction project communications assistant for Genome Corporation.\n\nYou will receive raw site update data and 4 draft messages. Rewrite ALL 4 messages professionally.\n\nRULES:\n- supervisor_ack: Short (max 5 lines), warm, encouraging WhatsApp message. Use 2-3 relevant emojis. Confirm receipt clearly.\n- manager_whatsapp: Structured WhatsApp summary. Professional but concise. Use emojis for status indicators. Max 15 lines. Make blocked issues stand out.\n- rahul_email_body: Full HTML email. Professional corporate tone. Genome Corporation branding (dark navy #1a1a2e). Include all data in a clean HTML table. Add a brief executive summary paragraph at top.\n- client_whatsapp: Client-facing WhatsApp message. Formal, reassuring, no internal jargon. Never mention blockers directly \u2014 say \"items under active resolution\". Max 8 lines.\n\nReturn STRICT JSON only \u2014 no markdown, no prose:\n{\n  \"supervisor_ack\": \"...\",\n  \"manager_whatsapp\": \"...\",\n  \"rahul_email_body\": \"...full HTML string...\",\n  \"client_whatsapp\": \"...\"\n}"
+            },
+            {
+              "role": "user",
+              "content": "Site Data:\nSite ID: {{ $json.site_id }}\nStatus: {{ $json.status }}\nProgress: {{ $json.progress_pct }}%\nPhase: {{ $json.work_phase }}\nSupervisor: {{ $json.supervisor_name }}\nClient Name: {{ $json.client_name }}\nWork Done Today: {{ $json.raw_text }}\nBlockers: {{ $json.blockers || 'None' }}\nNext Steps: {{ $json.next_steps || 'N/A' }}\nTimestamp: {{ $json.parsed_at }}\n\nDraft Messages:\nSUPERVISOR_ACK: {{ $json.supervisorAck }}\nMANAGER_WHATSAPP: {{ $json.managerWhatsApp }}\nRAHUL_EMAIL_BODY: {{ $json.rahulEmailBody }}\nCLIENT_WHATSAPP: {{ $json.clientWhatsAppMsg }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 2000
+        }
+      },
+      "id": "claude-polish-messages",
+      "name": "Claude Sonnet: Polish All Messages",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1,
+      "position": [
+        2900,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst raw = $input.first().json.message?.content || $input.first().json.content || '{}';\nconst prev = $('Build All Output Messages').first().json;\n\nlet polished;\ntry {\n  polished = JSON.parse(raw.replace(/```json|```/g, '').trim());\n} catch(e) {\n  // Fallback: use original draft messages if Claude response fails to parse\n  polished = {\n    supervisor_ack: prev.supervisorAck,\n    manager_whatsapp: prev.managerWhatsApp,\n    rahul_email_body: prev.rahulEmailBody,\n    client_whatsapp: prev.clientWhatsAppMsg\n  };\n}\n\nreturn [{ json: {\n  ...prev,\n  supervisorAck: polished.supervisor_ack || prev.supervisorAck,\n  managerWhatsApp: polished.manager_whatsapp || prev.managerWhatsApp,\n  rahulEmailBody: polished.rahul_email_body || prev.rahulEmailBody,\n  clientWhatsAppMsg: polished.client_whatsapp || prev.clientWhatsAppMsg,\n  messages_polished: true\n}}];\n"
+      },
+      "id": "parse-polished-messages",
+      "name": "Parse Polished Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3140,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## \ud83e\udd16 CLAUDE SONNET: POLISH\nRewrites all 4 messages professionally\nbefore any delivery:\n\n1. Supervisor ACK \u2014 warm & concise\n2. Manager WhatsApp \u2014 structured brief\n3. Rahul Email \u2014 full HTML corporate\n4. Client WhatsApp \u2014 formal, no jargon\n\n**Falls back to draft if parsing fails.**\nTemperature: 0.3 (professional, not robotic)\nModel: claude-sonnet-4-20250514",
+        "height": 220,
+        "width": 260,
+        "color": 7
+      },
+      "id": "note-polish",
+      "name": "Note: Polish Step",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2900,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.pdf_service_url }}",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify($json.pdf_payload) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "pdf_data"
+            }
+          }
+        }
+      },
+      "id": "http-pdf-service",
+      "name": "HTTP: Call PDF Microservice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3260,
+        740
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## \ud83d\udc0d PDF MICROSERVICE\nDeploy genome-pdf-service.py\non Railway (free tier is OK here\nbecause it's YOUR server, no 3rd party).\n\n```\nrailway up\n```\n\nSet PDF_SERVICE_URL in n8n Variables.\n\nThe service uses reportlab + Genome\nbranded template with logo, colors,\nprogress bar, signature row.",
+        "height": 220,
+        "width": 270,
+        "color": 2
+      },
+      "id": "note-pdf-service",
+      "name": "Note: PDF Service",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3260,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "Called by Orchestrator": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Has Voice Note?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Voice Note?": {
+      "main": [
+        [
+          {
+            "node": "Whisper: Transcribe Voice",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Claude Haiku: Extract Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Whisper: Transcribe Voice": {
+      "main": [
+        [
+          {
+            "node": "Merge Transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Transcript": {
+      "main": [
+        [
+          {
+            "node": "Claude Haiku: Extract Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Haiku: Extract Status": {
+      "main": [
+        [
+          {
+            "node": "Parse Extraction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Extraction": {
+      "main": [
+        [
+          {
+            "node": "Status = BLOCKED?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status = BLOCKED?": {
+      "main": [
+        [
+          {
+            "node": "Twilio: Alert Project Manager",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Google Sheets: Update Site Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Twilio: Alert Project Manager": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets: Update Site Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets: Update Site Status": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets: Append Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets: Append Audit Log": {
+      "main": [
+        [
+          {
+            "node": "Build All Output Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build All Output Messages": {
+      "main": [
+        [
+          {
+            "node": "Claude Sonnet: Polish All Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Drive: Upload PDF": {
+      "main": [
+        [
+          {
+            "node": "Set Drive URL in Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Client Delivery Payload": {
+      "main": [
+        [
+          {
+            "node": "Client Has WhatsApp?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Client Has WhatsApp?": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp: Report Link to Client",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gmail: PDF Report to Client",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cron: Check 48hr No-Update": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets: Read All Sites",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets: Read All Sites": {
+      "main": [
+        [
+          {
+            "node": "Filter: Sites With No Update 48hr",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Sites With No Update 48hr": {
+      "main": [
+        [
+          {
+            "node": "Twilio: Reminder SMS to Supervisor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cron: End-of-Day Report (6 PM)": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets: Fetch All Sites",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets: Fetch All Sites": {
+      "main": [
+        [
+          {
+            "node": "Build EOD Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build EOD Report": {
+      "main": [
+        [
+          {
+            "node": "Gmail: Send EOD Report to Manager",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "jsPDF: Generate PDF + Build Client Payload": {
+      "main": [
+        [
+          {
+            "node": "Convert PDF to Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Drive URL in Payload": {
+      "main": [
+        [
+          {
+            "node": "Client Has WhatsApp?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Sonnet: Polish All Messages": {
+      "main": [
+        [
+          {
+            "node": "Parse Polished Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Polished Messages": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp: ACK to Supervisor",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "WhatsApp: Summary to Manager",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Gmail: EOD Summary to Rahul Tanwar",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Python: Generate Branded PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Python: Generate Branded PDF": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Call PDF Microservice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Call PDF Microservice": {
+      "main": [
+        [
+          {
+            "node": "Google Drive: Upload PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    "agent-1",
+    "site-status",
+    "v5"
+  ]
+}
