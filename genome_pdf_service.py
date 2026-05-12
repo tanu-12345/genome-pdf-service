@@ -38,7 +38,7 @@ GREEN_BG    = HexColor('#E8F5E9')
 LIGHT_GOLD  = HexColor('#F5E9C0')
 
 PAGE_W, PAGE_H = A4
-LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'genome_logo_original_clean.png')
+LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'genome_logo_clean.png')
 
 STATUS_MAP = {
     'Blocked':   (RED,      RED_LIGHT,   'ATTENTION REQUIRED'),
